@@ -106,12 +106,27 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
         sliderProgress.PreviewMouseDown += (_, e) =>
         {
-            _wasPlaying = mediaElement.IsPlaying;
-            mediaElement.Pause();
+            _wasPlaying = IsPlaying;
+            if (_wasPlaying)
+            {
+                mediaElement.Pause();
+            }
         };
         sliderProgress.PreviewMouseUp += (_, _) =>
         {
-            if (_wasPlaying) mediaElement.Play();
+            if (_wasPlaying)
+            {
+                _wasPlaying = false;
+                mediaElement.Play();
+            }
+        };
+        sliderProgress.LostMouseCapture += (_, _) =>
+        {
+            if (_wasPlaying)
+            {
+                _wasPlaying = false;
+                mediaElement.Play();
+            }
         };
 
         PreviewMouseWheel += (_, e) => ChangeVolume(e.Delta / 120d * 0.04d);
@@ -216,20 +231,20 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         Focus();
         if (e.LeftButton == MouseButtonState.Pressed)
         {
-            if (e.ClickCount == 2)
-            {
-                _isMouseDown = false;
-                TogglePlayPause(this, EventArgs.Empty);
-                e.Handled = true;
-                return;
-            }
-
             if (e.OriginalSource is DependencyObject depObj)
             {
                 if (IsDescendantOf(depObj, videoControlContainer) || IsDescendantOf(depObj, volumeSliderLayer))
                 {
                     return;
                 }
+            }
+
+            if (e.ClickCount == 2)
+            {
+                _isMouseDown = false;
+                TogglePlayPause(this, EventArgs.Empty);
+                e.Handled = true;
+                return;
             }
 
             _isMouseDown = true;
