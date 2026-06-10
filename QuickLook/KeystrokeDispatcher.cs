@@ -1,4 +1,4 @@
-﻿// Copyright © 2017-2026 QL-Win Contributors
+// Copyright © 2017-2026 QL-Win Contributors
 //
 // This file is part of QuickLook program.
 //
@@ -21,6 +21,7 @@ using QuickLook.Helpers;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace QuickLook;
@@ -51,7 +52,7 @@ internal class KeystrokeDispatcher : IDisposable
         [
             Keys.Up, Keys.Down, Keys.Left, Keys.Right,
             Keys.Enter, Keys.Space, Keys.Escape,
-            Keys.F5, Keys.F11,
+            Keys.F5, Keys.F11, Keys.Tab,
         ];
     }
 
@@ -83,7 +84,14 @@ internal class KeystrokeDispatcher : IDisposable
         if (!_validKeys.Contains(e.KeyCode))
         {
             Debug.WriteLine($"Invalid keypress: key={e.KeyCode},down={isKeyDown}, time={_lastInvalidKeyPressTick}");
-            _lastInvalidKeyPressTick = DateTime.Now.Ticks;
+            if (WindowHelper.IsForegroundWindowBelongToSelf())
+            {
+                _lastInvalidKeyPressTick = 0L;
+            }
+            else
+            {
+                _lastInvalidKeyPressTick = DateTime.Now.Ticks;
+            }
             return;
         }
 
@@ -92,9 +100,74 @@ internal class KeystrokeDispatcher : IDisposable
             return;
 
         // skip if key is valid but too close after pressing an invalid key
-        if (DateTime.Now.Ticks - _lastInvalidKeyPressTick < VALID_KEY_PRESS_DELAY)
+        if (!WindowHelper.IsForegroundWindowBelongToSelf() && DateTime.Now.Ticks - _lastInvalidKeyPressTick < VALID_KEY_PRESS_DELAY)
             return;
         _lastInvalidKeyPressTick = 0L;
+
+        if (e.KeyCode == Keys.Tab && !WindowHelper.IsForegroundWindowBelongToSelf())
+        {
+            var wnd = System.Windows.Application.Current.Windows.OfType<ViewerWindow>().FirstOrDefault();
+            if (wnd != null && wnd.IsVisible && wnd.Plugin?.GetType().FullName == "QuickLook.Plugin.VideoViewer.Plugin")
+            {
+                if (isKeyDown)
+                {
+                    wnd.Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        wnd.Activate();
+                        wnd.Focus();
+                        var hwnd = new System.Windows.Interop.WindowInteropHelper(wnd).Handle;
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            User32.SetForegroundWindow(hwnd);
+                        }
+                    }));
+                }
+                e.Handled = true;
+                return;
+            }
+        }
+
+        if (IsVideoViewerForeground(out var videoWnd))
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter || e.KeyCode == Keys.Tab)
+            {
+                if (isKeyDown)
+                {
+                    if (e.KeyCode == Keys.Enter)
+                    {
+                        videoWnd.Dispatcher.BeginInvoke(new Action(() => videoWnd.ToggleFullscreen()));
+                    }
+                    else if (e.KeyCode == Keys.Space)
+                    {
+                        var contextObj = videoWnd.GetType().GetProperty("ContextObject", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(videoWnd);
+                        var viewerContent = contextObj?.GetType().GetProperty("ViewerContent", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(contextObj);
+                        if (viewerContent != null)
+                        {
+                            var toggleMethod = viewerContent.GetType().GetMethod("TogglePlayPause", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                            if (toggleMethod != null)
+                            {
+                                videoWnd.Dispatcher.BeginInvoke(new Action(() => toggleMethod.Invoke(viewerContent, new object[] { null, null })));
+                            }
+                        }
+                    }
+                    else if (e.KeyCode == Keys.Tab)
+                    {
+                        var contextObj = videoWnd.GetType().GetProperty("ContextObject", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(videoWnd);
+                        var viewerContent = contextObj?.GetType().GetProperty("ViewerContent", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(contextObj);
+                        if (viewerContent != null)
+                        {
+                            var toggleInfoMethod = viewerContent.GetType().GetMethod("ToggleVideoInfoOverlay", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                            if (toggleInfoMethod != null)
+                            {
+                                videoWnd.Dispatcher.BeginInvoke(new Action(() => toggleInfoMethod.Invoke(viewerContent, null)));
+                            }
+                        }
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+        }
 
         // skip if user is holding Space (don't skip other valid keys)
         if (isKeyDown && e.KeyCode == Keys.Space)
@@ -134,6 +207,12 @@ internal class KeystrokeDispatcher : IDisposable
             _isPreviewRequest = false;
             _spaceIsDown = e.KeyCode != Keys.Space && _spaceIsDown;
         }
+    }
+
+    private bool IsVideoViewerForeground(out ViewerWindow wnd)
+    {
+        wnd = System.Windows.Application.Current.Windows.OfType<ViewerWindow>().FirstOrDefault();
+        return wnd != null && wnd.IsVisible && WindowHelper.IsForegroundWindowBelongToSelf() && wnd.Plugin?.GetType().FullName == "QuickLook.Plugin.VideoViewer.Plugin";
     }
 
     private void InvokeRoutine(Keys key, bool isKeyDown)

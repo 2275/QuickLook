@@ -1,4 +1,4 @@
-﻿// Copyright © 2017-2026 QL-Win Contributors
+// Copyright © 2017-2026 QL-Win Contributors
 //
 // This file is part of QuickLook program.
 //
@@ -51,6 +51,10 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
     private DispatcherTimer _lyricTimer;
     private LrcLine[] _lyricLines;
     private MidiPlayer _midiPlayer;
+    private Point _mouseDownPosition;
+    private bool _isMouseDown;
+    private System.Threading.CancellationTokenSource _volumeSliderCancelTokenSource;
+    private double _fps = 25.0;
 
     private bool _hasVideo;
     private bool _isPlaying;
@@ -98,6 +102,7 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         buttonTime.Click += (_, _) => buttonTime.Tag = (string)buttonTime.Tag == "Time" ? "Length" : "Time";
         buttonMute.Click += (_, _) => volumeSliderLayer.Visibility = Visibility.Visible;
         volumeSliderLayer.MouseDown += (_, _) => volumeSliderLayer.Visibility = Visibility.Collapsed;
+        buttonCopyFrame.Click += (_, _) => CopyCurrentFrame();
 
         sliderProgress.PreviewMouseDown += (_, e) =>
         {
@@ -110,6 +115,13 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         };
 
         PreviewMouseWheel += (_, e) => ChangeVolume(e.Delta / 120d * 0.04d);
+
+        PreviewKeyDown += ViewerPanel_PreviewKeyDown;
+
+        Focusable = true;
+        Loaded += (s, e) => Focus();
+        InputMethod.SetIsInputMethodEnabled(this, false);
+        SizeChanged += (_, _) => AdjustInfoOverlayScale();
     }
 
     private partial void LoadAndInsertGlassLayer();
@@ -201,15 +213,197 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
     private void Panel_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        Focus();
         if (e.LeftButton == MouseButtonState.Pressed)
         {
-            var wnd = Window.GetWindow(this);
-            // Do not allow dragging when window is borderless (e.g. fullscreen)
-            if (wnd?.WindowStyle == WindowStyle.None)
+            if (e.ClickCount == 2)
+            {
+                _isMouseDown = false;
+                TogglePlayPause(this, EventArgs.Empty);
+                e.Handled = true;
                 return;
+            }
 
-            wnd?.DragMove();
+            if (e.OriginalSource is DependencyObject depObj)
+            {
+                if (IsDescendantOf(depObj, videoControlContainer) || IsDescendantOf(depObj, volumeSliderLayer))
+                {
+                    return;
+                }
+            }
+
+            _isMouseDown = true;
+            _mouseDownPosition = e.GetPosition(this);
         }
+    }
+
+    private void Panel_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_isMouseDown && e.LeftButton == MouseButtonState.Pressed)
+        {
+            Point currentPosition = e.GetPosition(this);
+            if (Math.Abs(currentPosition.X - _mouseDownPosition.X) >= SystemParameters.MinimumHorizontalDragDistance ||
+                Math.Abs(currentPosition.Y - _mouseDownPosition.Y) >= SystemParameters.MinimumVerticalDragDistance)
+            {
+                _isMouseDown = false;
+
+                var wnd = Window.GetWindow(this);
+                if (wnd != null && wnd.WindowStyle != WindowStyle.None)
+                {
+                    wnd.DragMove();
+                }
+            }
+        }
+    }
+
+    private void Panel_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        _isMouseDown = false;
+    }
+
+    private void ViewerPanel_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((e.Key == Key.System && e.SystemKey == Key.K) ||
+            (e.Key == Key.K && (Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt))
+        {
+            RotateVideo();
+            TriggerShowControlContainer();
+            e.Handled = true;
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Left:
+            case Key.A:
+                SeekRelative(-3);
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+            case Key.Right:
+            case Key.D:
+                SeekRelative(3);
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+            case Key.Q:
+                StepFrame(-1);
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+            case Key.E:
+                StepFrame(1);
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+            case Key.W:
+                ChangeVolume(0.05);
+                ShowAndAutoCollapseVolumeSlider();
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+            case Key.Down:
+            case Key.S:
+                ChangeVolume(-0.05);
+                ShowAndAutoCollapseVolumeSlider();
+                TriggerShowControlContainer();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void RotateVideo()
+    {
+        if (mediaElement == null) return;
+
+        if (mediaElement.LayoutTransform is RotateTransform rotateTransform)
+        {
+            rotateTransform.Angle = (rotateTransform.Angle + 90) % 360;
+        }
+        else
+        {
+            mediaElement.LayoutTransform = new RotateTransform(90);
+        }
+    }
+
+    private async void ShowAndAutoCollapseVolumeSlider()
+    {
+        if (volumeSliderLayer == null) return;
+
+        volumeSliderLayer.Visibility = Visibility.Visible;
+
+        _volumeSliderCancelTokenSource?.Cancel();
+        _volumeSliderCancelTokenSource = new System.Threading.CancellationTokenSource();
+        var token = _volumeSliderCancelTokenSource.Token;
+
+        try
+        {
+            await Task.Delay(1000, token);
+
+            if (!token.IsCancellationRequested)
+            {
+                volumeSliderLayer.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    private void SeekRelative(double seconds)
+    {
+        if (mediaElement == null) return;
+        long ticksToSeek = (long)(seconds * TimeSpan.TicksPerSecond);
+        long newPosition = mediaElement.MediaPosition + ticksToSeek;
+        mediaElement.MediaPosition = Math.Max(0L, Math.Min(mediaElement.MediaDuration, newPosition));
+    }
+
+    private void StepFrame(int frames)
+    {
+        if (mediaElement == null) return;
+
+        if (mediaElement.IsPlaying)
+        {
+            mediaElement.Pause();
+        }
+
+        long ticksPerFrame = (long)(TimeSpan.TicksPerSecond / _fps);
+        long newPosition = mediaElement.MediaPosition + (frames * ticksPerFrame);
+        mediaElement.MediaPosition = Math.Max(0L, Math.Min(mediaElement.MediaDuration, newPosition));
+    }
+
+    private void ToggleFullscreen()
+    {
+        var wnd = Window.GetWindow(this);
+        if (wnd != null)
+        {
+            var method = wnd.GetType().GetMethod("ToggleFullscreen", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            method?.Invoke(wnd, null);
+        }
+    }
+
+    private void TriggerShowControlContainer()
+    {
+        var show = (Storyboard)videoControlContainer.FindResource("ShowControlStoryboard");
+        show.Begin();
+    }
+
+    private static bool IsDescendantOf(DependencyObject child, DependencyObject parent)
+    {
+        if (child == null || parent == null)
+            return false;
+
+        DependencyObject current = child;
+        while (current != null)
+        {
+            if (ReferenceEquals(current, parent))
+                return true;
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return false;
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -441,12 +635,6 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
                 return;
             }
 
-            // Dispatch to the player's own MTA thread.
-            // ApplyHardwareAcceleration will call OpenSource() there, which
-            // rebuilds the full graph (incl. EVR/VMR9 allocator) so that
-            // NewAllocatorSurface fires and the WPF back buffer is refreshed.
-            // Position + play state are restored inside ApplyHardwareAcceleration
-            // via a MediaOpened callback.
             player.Dispatcher.BeginInvoke(() =>
                 player.ApplyHardwareAcceleration(enable));
         }
@@ -458,7 +646,15 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
     public void LoadAndPlay(string path, MediaInfoLib info)
     {
-        // Detect whether it is other playback formats
+        if (info != null)
+        {
+            string fpsStr = info.Get(StreamKind.Video, 0, "FrameRate");
+            if (double.TryParse(fpsStr, out double parsedFps) && parsedFps > 0)
+            {
+                _fps = parsedFps;
+            }
+        }
+
         if (!HasVideo)
         {
             string audioCodec = info?.Get(StreamKind.Audio, 0, "Format");
@@ -467,7 +663,7 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
             {
                 _midiPlayer = new MidiPlayer(this, _context);
                 _midiPlayer.LoadAndPlay(path);
-                return; // Midi player will handle the playback at all
+                return;
             }
         }
 
@@ -486,6 +682,139 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         LinearVolume = Math.Max(0d, Math.Min(1d, SettingHelper.Get("VolumeDouble", 1d, "QuickLook.Plugin.VideoViewer")));
 
         mediaElement.Play();
+        PopulateVideoInfo(path, info);
+    }
+
+    private void PopulateVideoInfo(string path, MediaInfoLib info)
+    {
+        try
+        {
+            infoFileName.Text = Path.GetFileName(path);
+
+            var width = info?.Get(StreamKind.Video, 0, "Width");
+            var height = info?.Get(StreamKind.Video, 0, "Height");
+            if (!string.IsNullOrEmpty(width) && !string.IsNullOrEmpty(height))
+                infoResolution.Text = $"{width} x {height}";
+            else
+                infoResolution.Text = "未知";
+
+            infoFps.Text = _fps.ToString("0.##");
+
+            var vCodec = info?.Get(StreamKind.Video, 0, "Format");
+            infoVideoCodec.Text = !string.IsNullOrEmpty(vCodec) ? vCodec : "未知";
+
+            var aCodec = info?.Get(StreamKind.Audio, 0, "Format");
+            infoAudioCodec.Text = !string.IsNullOrEmpty(aCodec) ? aCodec : "无";
+
+            var durationMsStr = info?.Get(StreamKind.General, 0, "Duration");
+            if (double.TryParse(durationMsStr, out var ms))
+            {
+                var t = TimeSpan.FromMilliseconds(ms);
+                infoDuration.Text = $"{(int)t.TotalMinutes:00}:{t.Seconds:00}";
+            }
+            else
+            {
+                infoDuration.Text = "未知";
+            }
+
+            if (File.Exists(path))
+            {
+                var len = new FileInfo(path).Length;
+                infoFileSize.Text = $"{(len / 1024d / 1024d):0.##} MB";
+            }
+            else
+            {
+                infoFileSize.Text = "未知";
+            }
+
+            var br = info?.Get(StreamKind.General, 0, "OverallBitRate");
+            if (double.TryParse(br, out var bps))
+            {
+                infoBitrate.Text = $"{(bps / 1000d):0.##} Kbps";
+            }
+            else
+            {
+                infoBitrate.Text = "未知";
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+        }
+    }
+
+    public void ToggleVideoInfoOverlay()
+    {
+        if (videoInfoOverlay == null) return;
+        videoInfoOverlay.Visibility = videoInfoOverlay.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private void AdjustInfoOverlayScale()
+    {
+        if (videoInfoOverlay == null) return;
+        if (ActualWidth == 0 || ActualHeight == 0) return;
+
+        double baseWidth = 640.0;
+        double scale = ActualWidth / baseWidth;
+
+        // Constraint scaling factor to a reasonable range
+        scale = Math.Max(0.7, Math.Min(3.0, scale));
+
+        videoInfoOverlay.LayoutTransform = new ScaleTransform(scale, scale);
+    }
+
+    private void CopyCurrentFrame()
+    {
+        try
+        {
+            if (mediaElement == null || mediaElement.ActualWidth <= 0 || mediaElement.ActualHeight <= 0)
+                return;
+
+            double width = mediaElement.ActualWidth;
+            double height = mediaElement.ActualHeight;
+
+            RenderTargetBitmap bmp = new RenderTargetBitmap(
+                (int)width, (int)height, 96, 96, PixelFormats.Pbgra32);
+
+            DrawingVisual visual = new DrawingVisual();
+            using (DrawingContext context = visual.RenderOpen())
+            {
+                VisualBrush brush = new VisualBrush(mediaElement);
+                context.DrawRectangle(brush, null, new Rect(0, 0, width, height));
+            }
+
+            bmp.Render(visual);
+
+            Clipboard.SetImage(bmp);
+
+            ShowCopyToast();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+        }
+    }
+
+    private void ShowCopyToast()
+    {
+        if (copyStatusOverlay == null) return;
+
+        copyStatusOverlay.Visibility = Visibility.Visible;
+
+        var animation = new DoubleAnimationUsingKeyFrames();
+        animation.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0))));
+        animation.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(0.2))));
+        animation.KeyFrames.Add(new LinearDoubleKeyFrame(1, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(1.0))));
+        animation.KeyFrames.Add(new LinearDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(1.4))));
+
+        animation.Completed += (s, e) =>
+        {
+            copyStatusOverlay.Visibility = Visibility.Collapsed;
+        };
+
+        copyStatusOverlay.BeginAnimation(UIElement.OpacityProperty, animation);
     }
 
     [NotifyPropertyChangedInvocator]
