@@ -64,6 +64,10 @@ public static class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetForegroundWindow(nint hWnd);
 
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(nint hWnd, uint Msg, nint wParam, nint lParam);
+
     [DllImport("user32.dll")]
     public static extern nint GetDesktopWindow();
 

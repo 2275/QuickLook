@@ -29,6 +29,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
@@ -61,6 +62,11 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
     private bool _wasPlaying;
     private bool _shouldLoop;
     private bool _useHardwareAcceleration;
+
+    private string _currentPath;
+    private System.Collections.Generic.List<string> _playlist = new System.Collections.Generic.List<string>();
+    private int _playlistIndex = -1;
+    private MediaInfoLib _mediaInfo;
 
     public ViewerPanel(ContextObject context)
     {
@@ -289,6 +295,14 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
         switch (e.Key)
         {
+            case Key.PageUp:
+                PlayNextVideo(-1);
+                e.Handled = true;
+                break;
+            case Key.PageDown:
+                PlayNextVideo(1);
+                e.Handled = true;
+                break;
             case Key.Left:
             case Key.A:
                 SeekRelative(-3);
@@ -661,8 +675,15 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
     public void LoadAndPlay(string path, MediaInfoLib info)
     {
+        if (_currentPath != path)
+        {
+            _currentPath = path;
+            InitializePlaylist(path);
+        }
+
         if (info != null)
         {
+            _mediaInfo = info;
             string fpsStr = info.Get(StreamKind.Video, 0, "FrameRate");
             if (double.TryParse(fpsStr, out double parsedFps) && parsedFps > 0)
             {
@@ -836,5 +857,173 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
     protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+    private static extern int StrCmpLogicalW(string psz1, string psz2);
+
+    private class NaturalStringComparer : System.Collections.Generic.IComparer<string>
+    {
+        public int Compare(string x, string y)
+        {
+            return StrCmpLogicalW(x, y);
+        }
+    }
+
+    private void PlayNextVideo(int direction)
+    {
+        if (_playlist == null || _playlist.Count <= 1 || _playlistIndex == -1)
+            return;
+
+        int newIndex = _playlistIndex + direction;
+        if (newIndex < 0)
+        {
+            newIndex = _playlist.Count - 1;
+        }
+        else if (newIndex >= _playlist.Count)
+        {
+            newIndex = 0;
+        }
+
+        string nextPath = _playlist[newIndex];
+        _playlistIndex = newIndex;
+        _currentPath = nextPath;
+
+        if (_mediaInfo != null)
+        {
+            try
+            {
+                _mediaInfo.Open(nextPath);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("MediaInfo open failed: " + ex);
+            }
+        }
+
+        if (_context != null)
+        {
+            _context.Title = Path.GetFileName(nextPath);
+        }
+
+        LoadAndPlay(nextPath, _mediaInfo);
+    }
+
+    private void InitializePlaylist(string currentPath)
+    {
+        _playlist.Clear();
+        _playlistIndex = -1;
+
+        try
+        {
+            string dir = Path.GetDirectoryName(currentPath);
+            if (string.IsNullOrEmpty(dir)) return;
+
+            IntPtr hostHwnd = IntPtr.Zero;
+            try
+            {
+                var viewWindowManagerType = Type.GetType("QuickLook.ViewWindowManager, QuickLook");
+                if (viewWindowManagerType != null)
+                {
+                    var instanceProp = viewWindowManagerType.GetProperty("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)
+                        ?? viewWindowManagerType.GetProperty("instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                    var managerInstance = instanceProp?.GetValue(null) ?? viewWindowManagerType.GetMethod("GetInstance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.Invoke(null, null);
+                    if (managerInstance != null)
+                    {
+                        var lastHostWindowProp = viewWindowManagerType.GetProperty("LastHostWindow", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                        hostHwnd = (IntPtr)(lastHostWindowProp?.GetValue(managerInstance) ?? IntPtr.Zero);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Reflect LastHostWindow failed: " + ex);
+            }
+
+            System.Collections.Generic.List<string> allFiles = new System.Collections.Generic.List<string>();
+            if (hostHwnd != IntPtr.Zero)
+            {
+                allFiles = GetExplorerFiles(hostHwnd);
+            }
+
+            if (allFiles == null || allFiles.Count == 0 || !allFiles.Contains(currentPath))
+            {
+                allFiles = new System.Collections.Generic.List<string>(Directory.GetFiles(dir));
+                allFiles.Sort(new NaturalStringComparer());
+            }
+
+            var videoExtensions = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".3gp", ".m4v",
+                ".mpg", ".mpeg", ".m2ts", ".rmvb", ".asf", ".ogg", ".ogv", ".ogm"
+            };
+
+            foreach (var file in allFiles)
+            {
+                string ext = Path.GetExtension(file);
+                if (videoExtensions.Contains(ext) || ext.Equals(Path.GetExtension(currentPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    _playlist.Add(file);
+                }
+            }
+
+            _playlistIndex = _playlist.IndexOf(currentPath);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine("Init playlist failed: " + ex);
+        }
+    }
+
+    private System.Collections.Generic.List<string> GetExplorerFiles(IntPtr hwnd)
+    {
+        var paths = new System.Collections.Generic.List<string>();
+        try
+        {
+            Type shellType = Type.GetTypeFromProgID("Shell.Application");
+            if (shellType != null)
+            {
+                dynamic shell = Activator.CreateInstance(shellType);
+                dynamic windows = shell.Windows();
+                int count = windows.Count;
+                for (int i = 0; i < count; i++)
+                {
+                    dynamic window = windows.Item(i);
+                    if (window == null) continue;
+
+                    long rawHwnd = 0;
+                    try
+                    {
+                        rawHwnd = Convert.ToInt64(window.HWND);
+                    }
+                    catch { }
+
+                    if (rawHwnd == (long)hwnd)
+                    {
+                        dynamic document = window.Document;
+                        if (document != null)
+                        {
+                            dynamic folder = document.Folder;
+                            dynamic items = folder.Items();
+                            int itemCount = items.Count;
+                            for (int j = 0; j < itemCount; j++)
+                            {
+                                dynamic item = items.Item(j);
+                                if (item != null)
+                                {
+                                    paths.Add(item.Path);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine("Error getting explorer files: " + ex);
+        }
+        return paths;
     }
 }

@@ -23,6 +23,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace QuickLook;
 
@@ -107,23 +108,25 @@ internal class KeystrokeDispatcher : IDisposable
         if (e.KeyCode == Keys.Tab && !WindowHelper.IsForegroundWindowBelongToSelf())
         {
             var wnd = System.Windows.Application.Current.Windows.OfType<ViewerWindow>().FirstOrDefault();
-            if (wnd != null && wnd.IsVisible && wnd.Plugin?.GetType().FullName == "QuickLook.Plugin.VideoViewer.Plugin")
+            Debug.WriteLine($"[TabFocus] Tab pressed (down={isKeyDown}), wnd={wnd != null}, wnd.IsVisible={wnd?.IsVisible}, Plugin={wnd?.Plugin?.GetType().FullName}");
+            if (wnd != null)
             {
-                if (isKeyDown)
+                // 窗口已显示且确认是视频插件 → 直接聚焦
+                bool isVideoReady = wnd.IsVisible &&
+                    wnd.Plugin?.GetType().FullName == "QuickLook.Plugin.VideoViewer.Plugin";
+                // 窗口还在加载中（Plugin 为 null 或窗口还没显示）→ 延迟聚焦
+                bool isLoading = !wnd.IsVisible || wnd.Plugin == null;
+
+                Debug.WriteLine($"[TabFocus] isVideoReady={isVideoReady}, isLoading={isLoading}");
+                if (isVideoReady || isLoading)
                 {
-                    wnd.Dispatcher.BeginInvoke(new Action(() =>
+                    if (isKeyDown)
                     {
-                        wnd.Activate();
-                        wnd.Focus();
-                        var hwnd = new System.Windows.Interop.WindowInteropHelper(wnd).Handle;
-                        if (hwnd != IntPtr.Zero)
-                        {
-                            User32.SetForegroundWindow(hwnd);
-                        }
-                    }));
+                        ScheduleVideoWindowFocus(wnd);
+                    }
+                    e.Handled = true;
+                    return;
                 }
-                e.Handled = true;
-                return;
             }
         }
 
@@ -207,6 +210,122 @@ internal class KeystrokeDispatcher : IDisposable
             _isPreviewRequest = false;
             _spaceIsDown = e.KeyCode != Keys.Space && _spaceIsDown;
         }
+    }
+
+    /// <summary>
+    /// 等待视频窗口完全就绪后聚焦窗口和 ViewerPanel。
+    /// 处理窗口还没显示、Plugin 还没加载、ViewerContent 还没设置等各种时序情况。
+    /// </summary>
+    private void ScheduleVideoWindowFocus(ViewerWindow wnd)
+    {
+        Debug.WriteLine($"[TabFocus] ScheduleVideoWindowFocus called, wnd.IsVisible={wnd.IsVisible}, Plugin={wnd.Plugin?.GetType().FullName}");
+
+        // 先尝试直接聚焦（窗口和内容都已就绪的情况）
+        if (TryFocusVideoWindow(wnd))
+        {
+            Debug.WriteLine("[TabFocus] Direct focus succeeded");
+            return;
+        }
+
+        Debug.WriteLine("[TabFocus] Starting retry timer...");
+        // 还没准备好，启动定时器等待
+        int retryCount = 0;
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(100)
+        };
+        timer.Tick += (s, args) =>
+        {
+            retryCount++;
+            // 最多等待3秒，或者窗口被关闭了
+            if (retryCount > 30)
+            {
+                Debug.WriteLine("[TabFocus] Timer timeout (3s), giving up");
+                timer.Stop();
+                return;
+            }
+
+            // 重新获取窗口（可能被重新创建了）
+            var currentWnd = System.Windows.Application.Current.Windows.OfType<ViewerWindow>().FirstOrDefault();
+            if (currentWnd == null)
+            {
+                Debug.WriteLine("[TabFocus] Window gone, stopping timer");
+                timer.Stop();
+                return;
+            }
+
+            // Plugin 已加载但不是视频插件 → 停止等待
+            if (currentWnd.Plugin != null &&
+                currentWnd.Plugin.GetType().FullName != "QuickLook.Plugin.VideoViewer.Plugin")
+            {
+                Debug.WriteLine($"[TabFocus] Not video plugin: {currentWnd.Plugin.GetType().FullName}, stopping");
+                timer.Stop();
+                return;
+            }
+
+            Debug.WriteLine($"[TabFocus] Retry #{retryCount}: IsVisible={currentWnd.IsVisible}, Plugin={currentWnd.Plugin?.GetType().FullName}");
+            if (TryFocusVideoWindow(currentWnd))
+            {
+                Debug.WriteLine($"[TabFocus] Focus succeeded on retry #{retryCount}");
+                timer.Stop();
+            }
+        };
+        timer.Start();
+    }
+
+    /// <summary>
+    /// 尝试聚焦视频窗口和 ViewerPanel。
+    /// 如果窗口已显示、Plugin 是 VideoViewer、ViewerContent 已设置，则执行聚焦并返回 true。
+    /// </summary>
+    private bool TryFocusVideoWindow(ViewerWindow wnd)
+    {
+        if (!wnd.IsVisible)
+        {
+            Debug.WriteLine("[TabFocus] TryFocus: window not visible");
+            return false;
+        }
+
+        // 确认是视频插件（如果 Plugin 还是 null 说明还在加载中）
+        if (wnd.Plugin == null)
+        {
+            Debug.WriteLine("[TabFocus] TryFocus: Plugin is null (loading)");
+            return false;
+        }
+
+        if (wnd.Plugin.GetType().FullName != "QuickLook.Plugin.VideoViewer.Plugin")
+        {
+            Debug.WriteLine($"[TabFocus] TryFocus: not video plugin ({wnd.Plugin.GetType().FullName})");
+            return false; // 不是视频插件，不需要聚焦
+        }
+
+        // 检查 ViewerContent 是否已设置（Plugin.View 是否已执行）
+        var contextObj = wnd.GetType().GetProperty("ContextObject", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(wnd);
+        var viewerContent = contextObj?.GetType().GetProperty("ViewerContent", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(contextObj);
+
+        // ViewerContent 还没设置（Plugin.View 还没执行完），继续等待
+        if (viewerContent is not System.Windows.UIElement uiElement)
+        {
+            Debug.WriteLine($"[TabFocus] TryFocus: ViewerContent is null or not UIElement (type={viewerContent?.GetType().FullName})");
+            return false;
+        }
+
+        Debug.WriteLine($"[TabFocus] TryFocus: All ready! ViewerContent type={uiElement.GetType().FullName}");
+
+        // 聚焦窗口
+        wnd.Activate();
+        wnd.Focus();
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(wnd).Handle;
+        if (hwnd != IntPtr.Zero)
+        {
+            User32.SetForegroundWindow(hwnd);
+        }
+
+        // 聚焦 ViewerPanel
+        var focusResult1 = uiElement.Focus();
+        var focusedElement = System.Windows.Input.Keyboard.Focus(uiElement);
+        Debug.WriteLine($"[TabFocus] TryFocus: Focus()={focusResult1}, Keyboard.Focus()={focusedElement?.GetType().FullName}, IsFocused={uiElement.IsFocused}, IsKeyboardFocused={uiElement.IsKeyboardFocused}");
+
+        return uiElement.IsKeyboardFocused || uiElement.IsKeyboardFocusWithin;
     }
 
     private bool IsVideoViewerForeground(out ViewerWindow wnd)

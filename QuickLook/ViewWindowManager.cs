@@ -1,4 +1,4 @@
-﻿// Copyright © 2017-2026 QL-Win Contributors
+// Copyright © 2017-2026 QL-Win Contributors
 //
 // This file is part of QuickLook program.
 //
@@ -31,6 +31,9 @@ public class ViewWindowManager : IDisposable
 
     private string _invokedPath = string.Empty;
     private ViewerWindow _viewerWindow;
+    private nint _lastHostWindow;
+
+    public nint LastHostWindow => _lastHostWindow;
 
     internal ViewWindowManager()
     {
@@ -142,6 +145,12 @@ public class ViewWindowManager : IDisposable
 
     public void InvokePreview(string path = null)
     {
+        var foreground = QuickLook.Common.NativeMethods.User32.GetForegroundWindow();
+        if (foreground != IntPtr.Zero && !WindowHelper.IsForegroundWindowBelongToSelf())
+        {
+            _lastHostWindow = foreground;
+        }
+
         if (string.IsNullOrEmpty(path))
             path = NativeMethods.QuickLook.GetCurrentSelection();
 

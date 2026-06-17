@@ -38,6 +38,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Failed to compile VideoViewer plugin!"; 
 # 5. Sync binary dependencies with robocopy
 Write-Host ">>> Step 5/7: Synchronizing compiled files to Package directory..." -ForegroundColor Cyan
 robocopy "$BaseDir\Build\Debug" "$BaseDir\Build\Package" *.* /e /njh /njs /ndl /nfl /nc /ns /np /xf *.pdb *.obj *.ipdb *.iobj *.exp *.lib *.ilk *.xml
+# robocopy exit code <= 7 is successful sync
+if ($LASTEXITCODE -gt 7) { Write-Error "Robocopy execution failed!"; exit }
 
 # 6. Generate portable lock file
 Write-Host ">>> Step 6/7: Writing portable lock file (portable.lock)..." -ForegroundColor Cyan
@@ -46,7 +48,7 @@ Write-Host ">>> Step 6/7: Writing portable lock file (portable.lock)..." -Foregr
 # 7. Zip package archive
 Write-Host ">>> Step 7/7: Compressing into portable ZIP file..." -ForegroundColor Cyan
 Set-Location "$BaseDir\Scripts"
-.\pack-zip.ps1
+& powershell -ExecutionPolicy Bypass -File .\pack-zip.ps1
 
 Write-Host "=================== Packaging Completed Successfully ===================" -ForegroundColor Green
 Write-Host ">>> Portable ZIP package generated in Build\ folder." -ForegroundColor Green
