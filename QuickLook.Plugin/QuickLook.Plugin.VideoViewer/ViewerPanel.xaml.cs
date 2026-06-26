@@ -125,6 +125,11 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
                 _wasPlaying = false;
                 mediaElement.Play();
             }
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Focus();
+                System.Windows.Input.Keyboard.Focus(this);
+            }), DispatcherPriority.Input);
         };
         sliderProgress.LostMouseCapture += (_, _) =>
         {
@@ -133,6 +138,11 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
                 _wasPlaying = false;
                 mediaElement.Play();
             }
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Focus();
+                System.Windows.Input.Keyboard.Focus(this);
+            }), DispatcherPriority.Input);
         };
 
         PreviewMouseWheel += (_, e) => ChangeVolume(e.Delta / 120d * 0.04d);
@@ -140,7 +150,14 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         PreviewKeyDown += ViewerPanel_PreviewKeyDown;
 
         Focusable = true;
-        Loaded += (s, e) => Focus();
+        Loaded += (s, e) =>
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Focus();
+                System.Windows.Input.Keyboard.Focus(this);
+            }), DispatcherPriority.Input);
+        };
         InputMethod.SetIsInputMethodEnabled(this, false);
         SizeChanged += (_, _) => AdjustInfoOverlayScale();
     }
@@ -234,6 +251,12 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
 
     private void Panel_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Focus();
+            System.Windows.Input.Keyboard.Focus(this);
+        }), DispatcherPriority.Input);
+
         Focus();
         if (e.LeftButton == MouseButtonState.Pressed)
         {
@@ -280,6 +303,12 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
     private void Panel_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         _isMouseDown = false;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Focus();
+            System.Windows.Input.Keyboard.Focus(this);
+        }), DispatcherPriority.Input);
     }
 
     private void ViewerPanel_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -445,6 +474,12 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         HasVideo = mediaElement.HasVideo;
 
         _context.IsBusy = false;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Focus();
+            System.Windows.Input.Keyboard.Focus(this);
+        }), DispatcherPriority.Input);
     }
 
     private void MediaFailed(object sender, MediaFailedEventArgs e)
