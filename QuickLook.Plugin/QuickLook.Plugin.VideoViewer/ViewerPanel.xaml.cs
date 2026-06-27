@@ -89,8 +89,8 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         mediaElement.MediaEnded += MediaEnded;
         mediaElement.MediaFailed += MediaFailed;
 
-        ShouldLoop = SettingHelper.Get("ShouldLoop", false, "QuickLook.Plugin.VideoViewer");
-        UseHardwareAcceleration = SettingHelper.Get("UseHardwareAcceleration", false, "QuickLook.Plugin.VideoViewer");
+        ShouldLoop = SettingHelper.Get("ShouldLoop", true, "QuickLook.Plugin.VideoViewer");
+        UseHardwareAcceleration = SettingHelper.Get("UseHardwareAcceleration", true, "QuickLook.Plugin.VideoViewer");
 
         // Apply persisted HW/SW mode to the underlying player if supported.
         HardwareAccelerationModeChanged(UseHardwareAcceleration);

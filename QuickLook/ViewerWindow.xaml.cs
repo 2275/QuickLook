@@ -67,7 +67,7 @@ public partial class ViewerWindow : Window
 
         windowFrameContainer.PreviewMouseMove += ShowWindowCaptionContainer;
 
-        Topmost = SettingHelper.Get("Topmost", false);
+        Topmost = SettingHelper.Get("Topmost", true);
         buttonTop.Tag = Topmost ? "Top" : "Auto";
 
         ShowInTaskbar = SettingHelper.Get("ShowInTaskbar", false);
