@@ -150,14 +150,6 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         PreviewKeyDown += ViewerPanel_PreviewKeyDown;
 
         Focusable = true;
-        Loaded += (s, e) =>
-        {
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                Focus();
-                System.Windows.Input.Keyboard.Focus(this);
-            }), DispatcherPriority.Input);
-        };
         InputMethod.SetIsInputMethodEnabled(this, false);
         SizeChanged += (_, _) => AdjustInfoOverlayScale();
     }
@@ -474,12 +466,6 @@ public partial class ViewerPanel : UserControl, IDisposable, INotifyPropertyChan
         HasVideo = mediaElement.HasVideo;
 
         _context.IsBusy = false;
-
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            Focus();
-            System.Windows.Input.Keyboard.Focus(this);
-        }), DispatcherPriority.Input);
     }
 
     private void MediaFailed(object sender, MediaFailedEventArgs e)
